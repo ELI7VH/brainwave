@@ -1,0 +1,38 @@
+{
+  "llama_bin": "D:\\llama-cpp",
+  "models_dir": "D:\\.lmstudio\\models",
+  "servers": {
+    "code": {
+      "port": 1234,
+      "model": "Qwen/CodeQwen1.5-7B-Chat-GGUF/codeqwen-1_5-7b-chat-q4_k_m.gguf",
+      "gpu_layers": 99,
+      "ctx_size": 8192,
+      "flash_attn": "on",
+      "description": "Code generation, GLSL shaders, technical tasks",
+      "vram_mb": 5014
+    },
+    "naming": {
+      "port": 1235,
+      "model": "lmstudio-community/Qwen2.5-0.5B-Instruct-GGUF/Qwen2.5-0.5B-Instruct-Q8_0.gguf",
+      "gpu_layers": 99,
+      "ctx_size": 2048,
+      "flash_attn": "on",
+      "description": "Chat naming, classification, lightweight tasks",
+      "vram_mb": 825
+    }
+  },
+  "prompts": {
+    "name_chat": {
+      "server": "naming",
+      "system": "You are a chat naming assistant. Given a conversation, output ONLY a short title (2-6 words). No quotes, no explanation, no punctuation at the end.",
+      "max_tokens": 20,
+      "temperature": 0.3
+    },
+    "summarize_chat": {
+      "server": "code",
+      "system": "You are a technical summarizer. Given a chat transcript, produce a structured handoff summary in markdown with sections: ## What Was Done, ## Open Items, ## Key Decisions. Be concise and specific.",
+      "max_tokens": 512,
+      "temperature": 0.2
+    }
+  }
+}

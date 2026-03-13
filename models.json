@@ -1,0 +1,112 @@
+{
+  "inventory": [
+    {
+      "name": "CodeQwen1.5-7B-Chat",
+      "path": "Qwen/CodeQwen1.5-7B-Chat-GGUF/codeqwen-1_5-7b-chat-q4_k_m.gguf",
+      "quant": "Q4_K_M",
+      "size_gb": 4.5,
+      "params": "7B",
+      "strengths": ["code", "GLSL", "FIM"],
+      "glsl_trained": true,
+      "notes": "Best local model for shader code. Supports fill-in-middle."
+    },
+    {
+      "name": "Qwen2.5-0.5B-Instruct",
+      "path": "lmstudio-community/Qwen2.5-0.5B-Instruct-GGUF/Qwen2.5-0.5B-Instruct-Q8_0.gguf",
+      "quant": "Q8_0",
+      "size_gb": 0.5,
+      "params": "0.5B",
+      "strengths": ["naming", "classification", "lightweight"],
+      "glsl_trained": false,
+      "notes": "Near-instant inference. Good for utility tasks."
+    },
+    {
+      "name": "DeepSeek-Coder-V2-Lite",
+      "path": "lmstudio-community/DeepSeek-Coder-V2-Lite-Instruct-GGUF/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+      "quant": "Q4_K_M",
+      "size_gb": 9.7,
+      "params": "16B (MoE)",
+      "strengths": ["code", "GLSL", "reasoning"],
+      "glsl_trained": true,
+      "notes": "87 languages including GLSL. Bigger but capable."
+    },
+    {
+      "name": "phi-4",
+      "path": "lmstudio-community/phi-4-GGUF/phi-4-Q4_K_M.gguf",
+      "quant": "Q4_K_M",
+      "size_gb": 8.5,
+      "params": "14B",
+      "strengths": ["general", "reasoning", "math"],
+      "glsl_trained": false,
+      "notes": "Strong general purpose model from Microsoft."
+    },
+    {
+      "name": "Llama-3.1-8B-Instruct",
+      "path": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "quant": "Q4_K_M",
+      "size_gb": 4.6,
+      "params": "8B",
+      "strengths": ["general", "chat", "instruction-following"],
+      "glsl_trained": false,
+      "notes": "Solid all-rounder from Meta."
+    },
+    {
+      "name": "Qwen2.5-1.5B-Instruct-uncensored",
+      "path": "mradermacher/Qwen2.5-1.5B-Instruct-uncensored-GGUF/Qwen2.5-1.5B-Instruct-uncensored.Q8_0.gguf",
+      "quant": "Q8_0",
+      "size_gb": 1.8,
+      "params": "1.5B",
+      "strengths": ["general", "uncensored", "lightweight"],
+      "glsl_trained": false,
+      "notes": "Small uncensored model. Good for creative tasks."
+    },
+    {
+      "name": "gemma-3-4b-instruct",
+      "path": "lm-kit/gemma-3-4b-instruct-gguf/gemma-3-it-4B-Q4_K_S.gguf",
+      "quant": "Q4_K_S",
+      "size_gb": 2.3,
+      "params": "4B",
+      "strengths": ["general", "chat"],
+      "glsl_trained": false,
+      "notes": "Google's compact model."
+    },
+    {
+      "name": "LFM2.5-1.2B-Instruct",
+      "path": "lmstudio-community/LFM2.5-1.2B-Instruct-GGUF/LFM2.5-1.2B-Instruct-Q8_0.gguf",
+      "quant": "Q8_0",
+      "size_gb": 1.2,
+      "params": "1.2B",
+      "strengths": ["lightweight", "fast"],
+      "glsl_trained": false,
+      "notes": "Liquid Foundation Model. Novel architecture."
+    },
+    {
+      "name": "NVIDIA-Nemotron-3-Nano-30B",
+      "path": "lmstudio-community/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF/NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+      "quant": "Q4_K_M",
+      "size_gb": 23,
+      "params": "30B (3B active MoE)",
+      "strengths": ["general"],
+      "glsl_trained": false,
+      "notes": "DELETE CANDIDATE. 23GB on disk for 3B active params. Bad ratio."
+    },
+    {
+      "name": "gpt-oss-20b",
+      "path": "lmstudio-community/gpt-oss-20b-GGUF",
+      "quant": "unknown",
+      "size_gb": 12,
+      "params": "20B",
+      "strengths": ["general"],
+      "glsl_trained": false,
+      "notes": "Evaluate whether to keep."
+    }
+  ],
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5060 Ti",
+    "vram_mb": 16310,
+    "cpu": "AMD Ryzen 7 5700X 8-Core",
+    "ram_gb": 32,
+    "cuda": "13.0",
+    "driver": "581.80"
+  }
+}
