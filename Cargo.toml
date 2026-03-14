@@ -1,8 +1,12 @@
 [package]
 name = "brainwave"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Local LLM inference stack manager"
+description = "Local LLM inference stack + ML vision connector"
+
+[[bin]]
+name = "bw"
+path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -21,6 +21,16 @@
       "vram_mb": 825
     }
   },
+  "connectors": {
+    "vision": {
+      "type": "python",
+      "script": "connectors/vision/vision_connector.py",
+      "args": ["--all"],
+      "description": "MediaPipe hand/pose/segmentation → wavehaze shared memory",
+      "shm_name": "WaveHaze_Vision",
+      "camera": 0
+    }
+  },
   "prompts": {
     "name_chat": {
       "server": "naming",

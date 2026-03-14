@@ -13,6 +13,8 @@ struct Config {
     llama_bin: String,
     models_dir: String,
     servers: HashMap<String, ServerConfig>,
+    #[serde(default)]
+    connectors: HashMap<String, ConnectorConfig>,
 }
 
 #[derive(Deserialize)]
@@ -24,6 +26,19 @@ struct ServerConfig {
     flash_attn: String,
     description: String,
     vram_mb: u32,
+}
+
+#[derive(Deserialize)]
+struct ConnectorConfig {
+    #[serde(rename = "type")]
+    conn_type: String,
+    script: String,
+    #[serde(default)]
+    args: Vec<String>,
+    description: String,
+    shm_name: String,
+    #[serde(default)]
+    camera: u32,
 }
 
 #[derive(Deserialize)]
@@ -50,14 +65,12 @@ struct HealthResponse {
 fn config_path() -> PathBuf {
     let exe = env::current_exe().unwrap_or_default();
     let dir = exe.parent().unwrap_or(Path::new("."));
-    // Walk up from target/release or target/debug to find config.json
     for ancestor in dir.ancestors() {
         let candidate = ancestor.join("config.json");
         if candidate.exists() {
             return candidate;
         }
     }
-    // Fallback: current directory
     PathBuf::from("config.json")
 }
 
@@ -69,7 +82,10 @@ fn load_config() -> Config {
 }
 
 fn project_dir() -> PathBuf {
-    config_path().parent().unwrap_or(Path::new(".")).to_path_buf()
+    config_path()
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf()
 }
 
 fn health(port: u16) -> bool {
@@ -85,6 +101,101 @@ fn health(port: u16) -> bool {
         Err(_) => false,
     }
 }
+
+// ── Connector helpers ──────────────────────────────────────
+
+fn connector_pid_path(name: &str) -> PathBuf {
+    project_dir().join("logs").join(format!("{}.pid", name))
+}
+
+fn connector_running(name: &str) -> bool {
+    let pid_path = connector_pid_path(name);
+    if let Ok(pid_str) = fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            // Check if process exists (Windows: tasklist)
+            if let Ok(output) = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+                .output()
+            {
+                let text = String::from_utf8_lossy(&output.stdout);
+                return text.contains(&pid.to_string());
+            }
+        }
+    }
+    false
+}
+
+fn start_connector(name: &str, conn: &ConnectorConfig) {
+    if connector_running(name) {
+        println!("  [{}] already running", name.cyan());
+        return;
+    }
+
+    let script_path = project_dir().join(&conn.script);
+    if !script_path.exists() {
+        eprintln!(
+            "  {} script not found: {}",
+            "ERROR:".red().bold(),
+            script_path.display()
+        );
+        return;
+    }
+
+    let log_dir = project_dir().join("logs");
+    fs::create_dir_all(&log_dir).ok();
+    let log_file = fs::File::create(log_dir.join(format!("{}.log", name)))
+        .expect("Failed to create log file");
+
+    println!(
+        "  [{}] starting — {}",
+        name.cyan(),
+        conn.description.dimmed()
+    );
+    println!("    shm: {}", conn.shm_name);
+
+    let mut cmd_args = vec![script_path.to_string_lossy().to_string()];
+    cmd_args.extend(conn.args.clone());
+    if conn.camera > 0 {
+        cmd_args.push("--camera".to_string());
+        cmd_args.push(conn.camera.to_string());
+    }
+
+    let child = Command::new("python")
+        .args(&cmd_args)
+        .stdout(Stdio::from(log_file.try_clone().unwrap()))
+        .stderr(Stdio::from(log_file))
+        .spawn();
+
+    match child {
+        Ok(c) => {
+            let pid = c.id();
+            println!("    pid: {}", pid);
+            fs::write(connector_pid_path(name), pid.to_string()).ok();
+            println!("    status: {}", "launched".green());
+        }
+        Err(e) => {
+            eprintln!("  {} failed to spawn: {}", "ERROR:".red().bold(), e);
+        }
+    }
+}
+
+fn stop_connector(name: &str) {
+    let pid_path = connector_pid_path(name);
+    if let Ok(pid_str) = fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            println!("  [{}] stopping pid {}", name.cyan(), pid);
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/F"])
+                .output();
+            fs::remove_file(&pid_path).ok();
+            println!("    {}", "stopped".green());
+            return;
+        }
+    }
+    println!("  [{}] not running", name.dimmed());
+}
+
+// ── Server helpers ─────────────────────────────────────────
 
 fn start_server(name: &str, srv: &ServerConfig, config: &Config) {
     if health(srv.port) {
@@ -181,12 +292,16 @@ fn stop_server(name: &str, srv: &ServerConfig) {
     }
 }
 
+// ── Commands ───────────────────────────────────────────────
+
 fn cmd_status(config: &Config) {
     println!();
     println!("  {}", "brainwave status".bold());
     println!("  {}", "=".repeat(56));
-    println!();
 
+    // LLM servers
+    println!();
+    println!("  {}", "LLM Servers".bold());
     for (name, srv) in &config.servers {
         let running = health(srv.port);
         let state = if running {
@@ -207,6 +322,29 @@ fn cmd_status(config: &Config) {
         println!();
     }
 
+    // Connectors
+    if !config.connectors.is_empty() {
+        println!("  {}", "Connectors".bold());
+        for (name, conn) in &config.connectors {
+            let running = connector_running(name);
+            let state = if running {
+                "RUNNING".green().bold().to_string()
+            } else {
+                "STOPPED".red().to_string()
+            };
+            println!(
+                "  {:<10} {:<6} {:<8}  shm:{}",
+                name.cyan(),
+                "",
+                state,
+                conn.shm_name
+            );
+            println!("  {:<10} {}", "", conn.description.dimmed());
+            println!();
+        }
+    }
+
+    // GPU
     if let Ok(output) = Command::new("nvidia-smi")
         .args([
             "--query-gpu=name,memory.used,memory.total,temperature.gpu",
@@ -238,23 +376,29 @@ fn cmd_start(config: &Config, target: Option<&str>) {
         Some(name) => {
             if let Some(srv) = config.servers.get(name) {
                 start_server(name, srv, config);
+            } else if let Some(conn) = config.connectors.get(name) {
+                start_connector(name, conn);
             } else {
+                let all_names: Vec<&str> = config
+                    .servers
+                    .keys()
+                    .chain(config.connectors.keys())
+                    .map(|s| s.as_str())
+                    .collect();
                 eprintln!(
-                    "  {} unknown server '{}'. Available: {}",
+                    "  {} unknown: '{}'. Available: {}",
                     "ERROR:".red().bold(),
                     name,
-                    config
-                        .servers
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    all_names.join(", ")
                 );
             }
         }
         None => {
             for (name, srv) in &config.servers {
                 start_server(name, srv, config);
+            }
+            for (name, conn) in &config.connectors {
+                start_connector(name, conn);
             }
         }
     }
@@ -267,13 +411,18 @@ fn cmd_stop(config: &Config, target: Option<&str>) {
         Some(name) => {
             if let Some(srv) = config.servers.get(name) {
                 stop_server(name, srv);
+            } else if config.connectors.contains_key(name) {
+                stop_connector(name);
             } else {
-                eprintln!("  {} unknown server '{}'", "ERROR:".red().bold(), name);
+                eprintln!("  {} unknown: '{}'", "ERROR:".red().bold(), name);
             }
         }
         None => {
             for (name, srv) in &config.servers {
                 stop_server(name, srv);
+            }
+            for (name, _) in &config.connectors {
+                stop_connector(name);
             }
         }
     }
@@ -324,17 +473,25 @@ fn cmd_models() {
 fn print_usage() {
     println!();
     println!(
-        "  {} — local LLM inference stack",
+        "  {} — local inference + ML connector stack",
         "brainwave".bold().cyan()
     );
     println!();
-    println!("  Usage: {} [command] [server]", "bw".bold());
+    println!("  Usage: {} [command] [target]", "bw".bold());
     println!();
     println!("  Commands:");
     println!("    {}         check what's running", "status".bold());
-    println!("    {} [name]  start server(s)", "start".bold());
-    println!("    {} [name]   stop server(s)", "stop".bold());
+    println!(
+        "    {} [name]  start server/connector (all if omitted)",
+        "start".bold()
+    );
+    println!(
+        "    {} [name]   stop server/connector (all if omitted)",
+        "stop".bold()
+    );
     println!("    {}        list model inventory", "models".bold());
+    println!();
+    println!("  Targets: servers (code, naming) or connectors (vision)");
     println!();
 }
 
