@@ -1,8 +1,12 @@
 [package]
 name = "brainwave"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Local LLM inference stack + ML vision connector"
+description = "Local ML inference daemon with dynamic model loading"
+
+[[bin]]
+name = "brainwave"
+path = "src/daemon.rs"
 
 [[bin]]
 name = "bw"
@@ -13,3 +17,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
 colored = "2"
+tiny_http = "0.12"

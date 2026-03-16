@@ -5,30 +5,38 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::Duration;
+
+// ── Config (for offline commands) ──────────────────────────
 
 #[derive(Deserialize)]
 struct Config {
-    llama_bin: String,
-    models_dir: String,
-    servers: HashMap<String, ServerConfig>,
+    port: u16,
+    #[serde(default = "default_vram")]
+    vram_budget_mb: u32,
+    #[serde(default)]
+    models: HashMap<String, ModelDef>,
     #[serde(default)]
     connectors: HashMap<String, ConnectorConfig>,
+    // Legacy fields (ignored)
+    #[serde(default)]
+    llama_bin: String,
+    #[serde(default)]
+    models_dir: String,
 }
 
+fn default_vram() -> u32 { 14000 }
+
 #[derive(Deserialize)]
-struct ServerConfig {
-    port: u16,
-    model: String,
-    gpu_layers: u32,
-    ctx_size: u32,
-    flash_attn: String,
+#[allow(dead_code)]
+struct ModelDef {
+    path: String,
     description: String,
     vram_mb: u32,
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ConnectorConfig {
     #[serde(rename = "type")]
     conn_type: String,
@@ -57,9 +65,24 @@ struct ModelEntry {
     notes: String,
 }
 
+// ── Daemon communication ───────────────────────────────────
+
 #[derive(Deserialize)]
-struct HealthResponse {
-    status: Option<String>,
+struct DaemonStatus {
+    status: String,
+    port: u16,
+    vram_used_mb: u32,
+    vram_budget_mb: u32,
+    loaded_models: Vec<LoadedModelInfo>,
+    available_models: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct LoadedModelInfo {
+    name: String,
+    port: u16,
+    vram_mb: u32,
+    idle_secs: u64,
 }
 
 fn config_path() -> PathBuf {
@@ -88,18 +111,15 @@ fn project_dir() -> PathBuf {
         .to_path_buf()
 }
 
-fn health(port: u16) -> bool {
-    let url = format!("http://localhost:{}/health", port);
-    match ureq::get(&url).timeout(Duration::from_secs(2)).call() {
-        Ok(resp) => {
-            if let Ok(h) = resp.into_json::<HealthResponse>() {
-                h.status.as_deref() == Some("ok")
-            } else {
-                true
-            }
-        }
-        Err(_) => false,
-    }
+fn daemon_url(config: &Config, path: &str) -> String {
+    format!("http://127.0.0.1:{}{}", config.port, path)
+}
+
+fn daemon_running(config: &Config) -> bool {
+    ureq::get(&daemon_url(config, "/health"))
+        .timeout(Duration::from_secs(2))
+        .call()
+        .is_ok()
 }
 
 // ── Connector helpers ──────────────────────────────────────
@@ -112,7 +132,6 @@ fn connector_running(name: &str) -> bool {
     let pid_path = connector_pid_path(name);
     if let Ok(pid_str) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            // Check if process exists (Windows: tasklist)
             if let Ok(output) = Command::new("tasklist")
                 .args(["/FI", &format!("PID eq {}", pid), "/NH"])
                 .output()
@@ -133,11 +152,7 @@ fn start_connector(name: &str, conn: &ConnectorConfig) {
 
     let script_path = project_dir().join(&conn.script);
     if !script_path.exists() {
-        eprintln!(
-            "  {} script not found: {}",
-            "ERROR:".red().bold(),
-            script_path.display()
-        );
+        eprintln!("  {} script not found: {}", "ERROR:".red().bold(), script_path.display());
         return;
     }
 
@@ -146,12 +161,7 @@ fn start_connector(name: &str, conn: &ConnectorConfig) {
     let log_file = fs::File::create(log_dir.join(format!("{}.log", name)))
         .expect("Failed to create log file");
 
-    println!(
-        "  [{}] starting — {}",
-        name.cyan(),
-        conn.description.dimmed()
-    );
-    println!("    shm: {}", conn.shm_name);
+    println!("  [{}] starting — {}", name.cyan(), conn.description.dimmed());
 
     let mut cmd_args = vec![script_path.to_string_lossy().to_string()];
     cmd_args.extend(conn.args.clone());
@@ -160,22 +170,18 @@ fn start_connector(name: &str, conn: &ConnectorConfig) {
         cmd_args.push(conn.camera.to_string());
     }
 
-    let child = Command::new("python")
+    match Command::new("python")
         .args(&cmd_args)
         .stdout(Stdio::from(log_file.try_clone().unwrap()))
         .stderr(Stdio::from(log_file))
-        .spawn();
-
-    match child {
+        .spawn()
+    {
         Ok(c) => {
             let pid = c.id();
-            println!("    pid: {}", pid);
             fs::write(connector_pid_path(name), pid.to_string()).ok();
-            println!("    status: {}", "launched".green());
+            println!("    pid: {} — {}", pid, "launched".green());
         }
-        Err(e) => {
-            eprintln!("  {} failed to spawn: {}", "ERROR:".red().bold(), e);
-        }
+        Err(e) => eprintln!("  {} {}", "ERROR:".red().bold(), e),
     }
 }
 
@@ -184,9 +190,7 @@ fn stop_connector(name: &str) {
     if let Ok(pid_str) = fs::read_to_string(&pid_path) {
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
             println!("  [{}] stopping pid {}", name.cyan(), pid);
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .output();
+            let _ = Command::new("taskkill").args(["/PID", &pid.to_string(), "/F"]).output();
             fs::remove_file(&pid_path).ok();
             println!("    {}", "stopped".green());
             return;
@@ -195,130 +199,67 @@ fn stop_connector(name: &str) {
     println!("  [{}] not running", name.dimmed());
 }
 
-// ── Server helpers ─────────────────────────────────────────
-
-fn start_server(name: &str, srv: &ServerConfig, config: &Config) {
-    if health(srv.port) {
-        println!("  [{}] already running on :{}", name.cyan(), srv.port);
-        return;
-    }
-
-    let model_path = Path::new(&config.models_dir).join(&srv.model);
-    if !model_path.exists() {
-        eprintln!(
-            "  {} model not found: {}",
-            "ERROR:".red().bold(),
-            model_path.display()
-        );
-        return;
-    }
-
-    let exe_name = if cfg!(windows) {
-        "llama-server.exe"
-    } else {
-        "llama-server"
-    };
-    let exe = Path::new(&config.llama_bin).join(exe_name);
-    if !exe.exists() {
-        eprintln!(
-            "  {} llama-server not found at {}",
-            "ERROR:".red().bold(),
-            exe.display()
-        );
-        return;
-    }
-
-    let log_dir = project_dir().join("logs");
-    fs::create_dir_all(&log_dir).ok();
-    let log_file = fs::File::create(log_dir.join(format!("{}.log", name)))
-        .expect("Failed to create log file");
-
-    println!(
-        "  [{}] starting on :{} — {}",
-        name.cyan(),
-        srv.port,
-        srv.description.dimmed()
-    );
-    println!(
-        "    model: {}",
-        srv.model.split('/').last().unwrap_or(&srv.model)
-    );
-
-    let child = Command::new(&exe)
-        .arg("-m")
-        .arg(&model_path)
-        .arg("--port")
-        .arg(srv.port.to_string())
-        .arg("-ngl")
-        .arg(srv.gpu_layers.to_string())
-        .arg("-c")
-        .arg(srv.ctx_size.to_string())
-        .arg("-fa")
-        .arg(&srv.flash_attn)
-        .stdout(Stdio::from(log_file.try_clone().unwrap()))
-        .stderr(Stdio::from(log_file))
-        .spawn();
-
-    match child {
-        Ok(c) => println!("    pid: {}", c.id()),
-        Err(e) => {
-            eprintln!("  {} failed to spawn: {}", "ERROR:".red().bold(), e);
-            return;
-        }
-    }
-
-    for _ in 0..30 {
-        if health(srv.port) {
-            println!("    status: {}", "ok".green());
-            return;
-        }
-        thread::sleep(Duration::from_secs(1));
-    }
-    println!(
-        "    {} didn't respond in 30s, check logs/{}.log",
-        "WARNING:".yellow().bold(),
-        name
-    );
-}
-
-fn stop_server(name: &str, srv: &ServerConfig) {
-    if health(srv.port) {
-        println!("  [{}] stopping on :{}", name.cyan(), srv.port);
-        let url = format!("http://localhost:{}/quit", srv.port);
-        let _ = ureq::get(&url).timeout(Duration::from_secs(2)).call();
-        println!("    {}", "stopped".green());
-    } else {
-        println!("  [{}] not running on :{}", name.dimmed(), srv.port);
-    }
-}
-
 // ── Commands ───────────────────────────────────────────────
 
 fn cmd_status(config: &Config) {
     println!();
-    println!("  {}", "brainwave status".bold());
+    println!("  {}", "brainwave".bold().cyan());
     println!("  {}", "=".repeat(56));
-
-    // LLM servers
     println!();
-    println!("  {}", "LLM Servers".bold());
-    for (name, srv) in &config.servers {
-        let running = health(srv.port);
-        let state = if running {
-            "RUNNING".green().bold().to_string()
-        } else {
-            "STOPPED".red().to_string()
-        };
-        let model_short = srv.model.split('/').last().unwrap_or(&srv.model);
-        println!(
-            "  {:<10} :{:<5}  {:<8}  {}MB  {}",
-            name.cyan(),
-            srv.port,
-            state,
-            srv.vram_mb,
-            model_short
-        );
-        println!("  {:<10} {}", "", srv.description.dimmed());
+
+    // Daemon status
+    if daemon_running(config) {
+        match ureq::get(&daemon_url(config, "/status"))
+            .timeout(Duration::from_secs(2))
+            .call()
+        {
+            Ok(resp) => {
+                if let Ok(status) = resp.into_json::<DaemonStatus>() {
+                    println!(
+                        "  daemon     :{:<5}  {}    {}/{}MB VRAM",
+                        status.port,
+                        "RUNNING".green().bold(),
+                        status.vram_used_mb,
+                        status.vram_budget_mb,
+                    );
+                    println!();
+
+                    if status.loaded_models.is_empty() {
+                        println!("  {} — models load on demand", "no models loaded".dimmed());
+                    } else {
+                        println!("  {}", "Loaded Models".bold());
+                        for m in &status.loaded_models {
+                            println!(
+                                "  {:<10} :{:<5}  {}MB  idle {}s",
+                                m.name.cyan(),
+                                m.port,
+                                m.vram_mb,
+                                m.idle_secs
+                            );
+                        }
+                    }
+                    println!();
+
+                    println!("  {}", "Available".bold());
+                    for name in &status.available_models {
+                        let loaded = status.loaded_models.iter().any(|m| m.name == *name);
+                        let cfg = config.models.get(name);
+                        let desc = cfg.map(|c| c.description.as_str()).unwrap_or("");
+                        let vram = cfg.map(|c| c.vram_mb).unwrap_or(0);
+                        if loaded {
+                            println!("  {:<10} {}MB  {} {}", name.green(), vram, desc.dimmed(), "[loaded]".green());
+                        } else {
+                            println!("  {:<10} {}MB  {}", name, vram, desc.dimmed());
+                        }
+                    }
+                    println!();
+                }
+            }
+            Err(e) => eprintln!("  {} {}", "ERROR:".red().bold(), e),
+        }
+    } else {
+        println!("  daemon     :{:<5}  {}", config.port, "STOPPED".red());
+        println!("  run {} to start", "brainwave".bold());
         println!();
     }
 
@@ -326,43 +267,28 @@ fn cmd_status(config: &Config) {
     if !config.connectors.is_empty() {
         println!("  {}", "Connectors".bold());
         for (name, conn) in &config.connectors {
-            let running = connector_running(name);
-            let state = if running {
+            let state = if connector_running(name) {
                 "RUNNING".green().bold().to_string()
             } else {
                 "STOPPED".red().to_string()
             };
-            println!(
-                "  {:<10} {:<6} {:<8}  shm:{}",
-                name.cyan(),
-                "",
-                state,
-                conn.shm_name
-            );
-            println!("  {:<10} {}", "", conn.description.dimmed());
-            println!();
+            println!("  {:<10} {}  shm:{}", name.cyan(), state, conn.shm_name);
         }
+        println!();
     }
 
     // GPU
     if let Ok(output) = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=name,memory.used,memory.total,temperature.gpu",
-            "--format=csv,noheader,nounits",
-        ])
+        .args(["--query-gpu=name,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"])
         .output()
     {
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
             println!("  {}", "GPU".bold());
-            println!("  ---");
             for line in text.trim().lines() {
-                let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-                if parts.len() == 4 {
-                    println!(
-                        "  {}  {}/{} MB  {}C",
-                        parts[0], parts[1], parts[2], parts[3]
-                    );
+                let p: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+                if p.len() == 4 {
+                    println!("  {}  {}/{} MB  {}C", p[0], p[1], p[2], p[3]);
                 }
             }
             println!();
@@ -370,33 +296,99 @@ fn cmd_status(config: &Config) {
     }
 }
 
+fn cmd_up(config: &Config) {
+    if daemon_running(config) {
+        println!("  brainwave already running on :{}", config.port);
+        return;
+    }
+
+    println!("  starting brainwave daemon on :{}...", config.port);
+
+    let exe = env::current_exe().unwrap_or_default();
+    let daemon_exe = exe.parent().unwrap_or(Path::new(".")).join(
+        if cfg!(windows) { "brainwave.exe" } else { "brainwave" }
+    );
+
+    if !daemon_exe.exists() {
+        eprintln!("  {} daemon binary not found at {}", "ERROR:".red().bold(), daemon_exe.display());
+        eprintln!("  run: cargo build --release");
+        return;
+    }
+
+    let log_dir = project_dir().join("logs");
+    fs::create_dir_all(&log_dir).ok();
+    let log_file = fs::File::create(log_dir.join("daemon.log"))
+        .expect("Failed to create log file");
+
+    match Command::new(&daemon_exe)
+        .stdout(Stdio::from(log_file.try_clone().unwrap()))
+        .stderr(Stdio::from(log_file))
+        .spawn()
+    {
+        Ok(c) => {
+            println!("  pid: {} — waiting for health...", c.id());
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_secs(1));
+                if daemon_running(config) {
+                    println!("  {}", "brainwave is up".green().bold());
+                    return;
+                }
+            }
+            println!("  {} check logs/daemon.log", "WARNING: slow start".yellow());
+        }
+        Err(e) => eprintln!("  {} {}", "ERROR:".red().bold(), e),
+    }
+}
+
+fn cmd_down(config: &Config) {
+    if !daemon_running(config) {
+        println!("  brainwave not running");
+        return;
+    }
+    println!("  stopping brainwave...");
+    match ureq::post(&daemon_url(config, "/shutdown"))
+        .timeout(Duration::from_secs(5))
+        .send_string("{}")
+    {
+        Ok(_) => println!("  {}", "brainwave stopped".green()),
+        Err(_) => println!("  {}", "brainwave stopped".green()), // connection reset = it shut down
+    }
+}
+
 fn cmd_start(config: &Config, target: Option<&str>) {
     println!();
     match target {
         Some(name) => {
-            if let Some(srv) = config.servers.get(name) {
-                start_server(name, srv, config);
-            } else if let Some(conn) = config.connectors.get(name) {
-                start_connector(name, conn);
+            if config.connectors.contains_key(name) {
+                start_connector(name, &config.connectors[name]);
+            } else if config.models.contains_key(name) {
+                // Pre-load a model by sending a lightweight request
+                if !daemon_running(config) {
+                    eprintln!("  {} daemon not running. Run {} first", "ERROR:".red().bold(), "bw up".bold());
+                    return;
+                }
+                println!("  [{}] pre-loading...", name.cyan());
+                let body = serde_json::json!({
+                    "model": name,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 1,
+                });
+                match ureq::post(&daemon_url(config, "/v1/chat/completions"))
+                    .set("Content-Type", "application/json")
+                    .timeout(Duration::from_secs(120))
+                    .send_string(&body.to_string())
+                {
+                    Ok(_) => println!("  [{}] {}", name.cyan(), "loaded".green()),
+                    Err(e) => eprintln!("  {} {}", "ERROR:".red().bold(), e),
+                }
             } else {
-                let all_names: Vec<&str> = config
-                    .servers
-                    .keys()
-                    .chain(config.connectors.keys())
-                    .map(|s| s.as_str())
-                    .collect();
-                eprintln!(
-                    "  {} unknown: '{}'. Available: {}",
-                    "ERROR:".red().bold(),
-                    name,
-                    all_names.join(", ")
-                );
+                let all: Vec<&str> = config.models.keys().chain(config.connectors.keys())
+                    .map(|s| s.as_str()).collect();
+                eprintln!("  {} unknown: '{}'. Available: {}", "ERROR:".red().bold(), name, all.join(", "));
             }
         }
         None => {
-            for (name, srv) in &config.servers {
-                start_server(name, srv, config);
-            }
+            // Start all connectors (models load on demand)
             for (name, conn) in &config.connectors {
                 start_connector(name, conn);
             }
@@ -409,18 +401,26 @@ fn cmd_stop(config: &Config, target: Option<&str>) {
     println!();
     match target {
         Some(name) => {
-            if let Some(srv) = config.servers.get(name) {
-                stop_server(name, srv);
-            } else if config.connectors.contains_key(name) {
+            if config.connectors.contains_key(name) {
                 stop_connector(name);
+            } else if config.models.contains_key(name) {
+                if !daemon_running(config) {
+                    println!("  daemon not running");
+                    return;
+                }
+                let body = serde_json::json!({"model": name});
+                match ureq::post(&daemon_url(config, "/unload"))
+                    .set("Content-Type", "application/json")
+                    .send_string(&body.to_string())
+                {
+                    Ok(_) => println!("  [{}] {}", name.cyan(), "unloaded".green()),
+                    Err(e) => eprintln!("  {} {}", "ERROR:".red().bold(), e),
+                }
             } else {
                 eprintln!("  {} unknown: '{}'", "ERROR:".red().bold(), name);
             }
         }
         None => {
-            for (name, srv) in &config.servers {
-                stop_server(name, srv);
-            }
             for (name, _) in &config.connectors {
                 stop_connector(name);
             }
@@ -443,11 +443,7 @@ fn cmd_models() {
     println!();
     println!(
         "  {:<33} {:>6}  {:<8}  {:>4}  {}",
-        "Model".bold(),
-        "Size".bold(),
-        "Quant".bold(),
-        "GLSL".bold(),
-        "Notes".bold()
+        "Model".bold(), "Size".bold(), "Quant".bold(), "GLSL".bold(), "Notes".bold()
     );
     println!("  {}", "-".repeat(86));
 
@@ -455,16 +451,11 @@ fn cmd_models() {
     models.sort_by(|a, b| b.size_gb.partial_cmp(&a.size_gb).unwrap());
 
     for m in &models {
-        let glsl = if m.glsl_trained.unwrap_or(false) {
-            "yes".green().to_string()
-        } else {
-            String::new()
-        };
+        let glsl = if m.glsl_trained.unwrap_or(false) { "yes".green().to_string() } else { String::new() };
         let notes: String = m.notes.chars().take(40).collect();
         println!(
             "  {:<33} {:>5.1}G  {:<8}  {:>4}  {}",
-            m.name, m.size_gb, m.quant, glsl,
-            notes.dimmed()
+            m.name, m.size_gb, m.quant, glsl, notes.dimmed()
         );
     }
     println!();
@@ -472,26 +463,26 @@ fn cmd_models() {
 
 fn print_usage() {
     println!();
-    println!(
-        "  {} — local inference + ML connector stack",
-        "brainwave".bold().cyan()
-    );
+    println!("  {} — local ML inference daemon", "brainwave".bold().cyan());
     println!();
     println!("  Usage: {} [command] [target]", "bw".bold());
     println!();
-    println!("  Commands:");
-    println!("    {}         check what's running", "status".bold());
-    println!(
-        "    {} [name]  start server/connector (all if omitted)",
-        "start".bold()
-    );
-    println!(
-        "    {} [name]   stop server/connector (all if omitted)",
-        "stop".bold()
-    );
-    println!("    {}        list model inventory", "models".bold());
+    println!("  Daemon:");
+    println!("    {}             start the daemon", "up".bold());
+    println!("    {}           stop the daemon", "down".bold());
+    println!("    {}         what's running + loaded models", "status".bold());
     println!();
-    println!("  Targets: servers (code, naming) or connectors (vision)");
+    println!("  Models:");
+    println!("    {} <name>   pre-load a model", "start".bold());
+    println!("    {} <name>    unload a model", "stop".bold());
+    println!("    {}         list model inventory", "models".bold());
+    println!();
+    println!("  Connectors:");
+    println!("    {} vision  start vision connector", "start".bold());
+    println!("    {} vision   stop vision connector", "stop".bold());
+    println!();
+    println!("  Models load automatically on first request.");
+    println!("  Idle models unload after timeout (configurable).");
     println!();
 }
 
@@ -504,6 +495,8 @@ fn main() {
 
     match cmd {
         "status" | "s" => cmd_status(&config),
+        "up" => cmd_up(&config),
+        "down" => cmd_down(&config),
         "start" => cmd_start(&config, target),
         "stop" => cmd_stop(&config, target),
         "models" | "m" => cmd_models(),

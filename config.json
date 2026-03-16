@@ -1,24 +1,50 @@
 {
   "llama_bin": "D:\\llama-cpp",
   "models_dir": "D:\\.lmstudio\\models",
-  "servers": {
+  "port": 1234,
+  "backend_port_start": 11000,
+  "idle_timeout_secs": 300,
+  "vram_budget_mb": 14000,
+  "models": {
     "code": {
-      "port": 1234,
-      "model": "Qwen/CodeQwen1.5-7B-Chat-GGUF/codeqwen-1_5-7b-chat-q4_k_m.gguf",
+      "path": "Qwen/CodeQwen1.5-7B-Chat-GGUF/codeqwen-1_5-7b-chat-q4_k_m.gguf",
       "gpu_layers": 99,
       "ctx_size": 8192,
-      "flash_attn": "on",
+      "flash_attn": true,
       "description": "Code generation, GLSL shaders, technical tasks",
       "vram_mb": 5014
     },
     "naming": {
-      "port": 1235,
-      "model": "lmstudio-community/Qwen2.5-0.5B-Instruct-GGUF/Qwen2.5-0.5B-Instruct-Q8_0.gguf",
+      "path": "lmstudio-community/Qwen2.5-0.5B-Instruct-GGUF/Qwen2.5-0.5B-Instruct-Q8_0.gguf",
       "gpu_layers": 99,
       "ctx_size": 2048,
-      "flash_attn": "on",
+      "flash_attn": true,
       "description": "Chat naming, classification, lightweight tasks",
       "vram_mb": 825
+    },
+    "deepseek": {
+      "path": "lmstudio-community/DeepSeek-Coder-V2-Lite-Instruct-GGUF/DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+      "gpu_layers": 99,
+      "ctx_size": 8192,
+      "flash_attn": true,
+      "description": "87 languages, strong GLSL, MoE",
+      "vram_mb": 9700
+    },
+    "phi4": {
+      "path": "lmstudio-community/phi-4-GGUF/phi-4-Q4_K_M.gguf",
+      "gpu_layers": 99,
+      "ctx_size": 4096,
+      "flash_attn": true,
+      "description": "General purpose reasoning",
+      "vram_mb": 8500
+    },
+    "llama31": {
+      "path": "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "gpu_layers": 99,
+      "ctx_size": 4096,
+      "flash_attn": true,
+      "description": "All-rounder from Meta",
+      "vram_mb": 4600
     }
   },
   "connectors": {
@@ -33,13 +59,13 @@
   },
   "prompts": {
     "name_chat": {
-      "server": "naming",
+      "model": "naming",
       "system": "You are a chat naming assistant. Given a conversation, output ONLY a short title (2-6 words). No quotes, no explanation, no punctuation at the end.",
       "max_tokens": 20,
       "temperature": 0.3
     },
     "summarize_chat": {
-      "server": "code",
+      "model": "code",
       "system": "You are a technical summarizer. Given a chat transcript, produce a structured handoff summary in markdown with sections: ## What Was Done, ## Open Items, ## Key Decisions. Be concise and specific.",
       "max_tokens": 512,
       "temperature": 0.2
